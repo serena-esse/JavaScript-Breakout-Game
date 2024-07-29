@@ -1,20 +1,27 @@
 const canvas = document.getElementById("gameCanvas");
 const context = canvas.getContext("2d");
 
-const paddleWidth = 10;
-const paddleHeight = 100;
+const paddleWidth = 100;
+const paddleHeight = 10;
 const ballRadius = 10;
-const aiSpeed = 4; // Velocità del paddle AI
-const initialBallSpeed = 2; // Velocità iniziale della pallina
-const speedIncrease = 0.5; // Incremento della velocità della pallina
-const blockCount = 20; // Numero di blocchi iniziale
+const initialBallSpeed = 4;
+const speedIncrease = 0.5;
+const blockRowCount = 5;
+const blockColumnCount = 7;
 const blockWidth = 75;
 const blockHeight = 20;
+const blockPadding = 10;
+const blockOffsetTop = 30;
+const blockOffsetLeft = 35;
 
 let playerScore = 0;
-let aiScore = 0;
 let level = 1;
 let blocks = [];
+let isPaused = false;
+
+const collisionSound = new Audio("collision.mp3");
+const scoreSound = new Audio("score.mp3");
+const powerUpSound = new Audio("powerup.mp3");
 
 function getRandomColor() {
   const letters = "0123456789ABCDEF";
@@ -25,35 +32,37 @@ function getRandomColor() {
   return color;
 }
 
+function getRandomPower() {
+  const powers = [null, "flame", "double_power", "speed"];
+  return powers[Math.floor(Math.random() * powers.length)];
+}
+
 function initBlocks() {
   blocks = [];
-  const centerX = canvas.width / 2;
-  const centerY = canvas.height / 2;
-  const areaWidth = canvas.width / 2;
-  const areaHeight = canvas.height / 2;
-
-  for (let i = 0; i < blockCount; i++) {
-    const x = centerX + Math.random() * areaWidth - areaWidth / 2;
-    const y = centerY + Math.random() * areaHeight - areaHeight / 2;
-    const color = getRandomColor();
-    blocks.push({ x, y, width: blockWidth, height: blockHeight, status: 1, color: color });
+  for (let c = 0; c < blockColumnCount; c++) {
+    blocks[c] = [];
+    for (let r = 0; r < blockRowCount; r++) {
+      const x = c * (blockWidth + blockPadding) + blockOffsetLeft;
+      const y = r * (blockHeight + blockPadding) + blockOffsetTop;
+      blocks[c][r] = {
+        x,
+        y,
+        width: blockWidth,
+        height: blockHeight,
+        status: 1,
+        color: getRandomColor(),
+        power: getRandomPower(),
+      };
+    }
   }
 }
 
 let playerPaddle = {
-  x: 10,
-  y: canvas.height / 2 - paddleHeight / 2,
+  x: canvas.width / 2 - paddleWidth / 2,
+  y: canvas.height - paddleHeight - 10,
   width: paddleWidth,
   height: paddleHeight,
-  dy: 0,
-};
-
-let aiPaddle = {
-  x: canvas.width - paddleWidth - 10,
-  y: canvas.height / 2 - paddleHeight / 2,
-  width: paddleWidth,
-  height: paddleHeight,
-  dy: 0,
+  dx: 0,
 };
 
 let ball = {
@@ -64,9 +73,50 @@ let ball = {
   dy: -initialBallSpeed,
 };
 
-function drawRect(x, y, width, height, color = "#fff") {
+function draw3DRect(x, y, width, height, color = "#fff") {
+  const lightColor = shadeColor(color, 20);
+  const darkColor = shadeColor(color, -20);
+
   context.fillStyle = color;
   context.fillRect(x, y, width, height);
+
+  context.fillStyle = darkColor;
+  context.beginPath();
+  context.moveTo(x + width, y);
+  context.lineTo(x + width, y + height);
+  context.lineTo(x + width - 10, y + height - 10);
+  context.lineTo(x + width - 10, y - 10);
+  context.closePath();
+  context.fill();
+
+  context.fillStyle = lightColor;
+  context.beginPath();
+  context.moveTo(x, y + height);
+  context.lineTo(x + width, y + height);
+  context.lineTo(x + width - 10, y + height - 10);
+  context.lineTo(x - 10, y + height - 10);
+  context.closePath();
+  context.fill();
+}
+
+function shadeColor(color, percent) {
+  let R = parseInt(color.substring(1, 3), 16);
+  let G = parseInt(color.substring(3, 5), 16);
+  let B = parseInt(color.substring(5, 7), 16);
+
+  R = parseInt((R * (100 + percent)) / 100);
+  G = parseInt((G * (100 + percent)) / 100);
+  B = parseInt((B * (100 + percent)) / 100);
+
+  R = R < 255 ? R : 255;
+  G = G < 255 ? G : 255;
+  B = B < 255 ? B : 255;
+
+  const RR = R.toString(16).length === 1 ? "0" + R.toString(16) : R.toString(16);
+  const GG = G.toString(16).length === 1 ? "0" + G.toString(16) : G.toString(16);
+  const BB = B.toString(16).length === 1 ? "0" + B.toString(16) : B.toString(16);
+
+  return "#" + RR + GG + BB;
 }
 
 function drawCircle(x, y, radius) {
@@ -79,83 +129,107 @@ function drawCircle(x, y, radius) {
 
 function drawText(text, x, y) {
   context.fillStyle = "#fff";
-  context.font = "48px Arial";
+  context.font = "24px Arial";
   context.fillText(text, x, y);
 }
 
 function drawBlocks() {
-  for (let block of blocks) {
-    if (block.status === 1) {
-      drawRect(block.x, block.y, block.width, block.height, block.color);
+  for (let c = 0; c < blockColumnCount; c++) {
+    for (let r = 0; r < blockRowCount; r++) {
+      const block = blocks[c][r];
+      if (block.status === 1) {
+        draw3DRect(block.x, block.y, block.width, block.height, block.color);
+      }
     }
   }
 }
 
-function movePaddle(paddle) {
-  paddle.y += paddle.dy;
-  if (paddle.y < 0) {
-    paddle.y = 0;
-  } else if (paddle.y + paddle.height > canvas.height) {
-    paddle.y = canvas.height - paddle.height;
+function movePaddle() {
+  playerPaddle.x += playerPaddle.dx;
+  if (playerPaddle.x < 0) {
+    playerPaddle.x = 0;
+  } else if (playerPaddle.x + playerPaddle.width > canvas.width) {
+    playerPaddle.x = canvas.width - playerPaddle.width;
   }
 }
 
-function moveAIPaddle() {
-  if (ball.y < aiPaddle.y + aiPaddle.height / 2) {
-    aiPaddle.dy = -aiSpeed;
-  } else if (ball.y > aiPaddle.y + aiPaddle.height / 2) {
-    aiPaddle.dy = aiSpeed;
-  } else {
-    aiPaddle.dy = 0;
+function activatePower(power) {
+  if (power === "flame") {
+    ball.color = "red";
+    setTimeout(() => (ball.color = "#fff"), 5000);
+  } else if (power === "double_power") {
+    ball.dx *= 2;
+    ball.dy *= 2;
+    setTimeout(() => {
+      ball.dx /= 2;
+      ball.dy /= 2;
+    }, 5000);
+  } else if (power === "speed") {
+    ball.dx *= 1.5;
+    ball.dy *= 1.5;
+    setTimeout(() => {
+      ball.dx /= 1.5;
+      ball.dy /= 1.5;
+    }, 5000);
   }
-  movePaddle(aiPaddle);
+  powerUpSound.play();
 }
 
 function moveBall() {
   ball.x += ball.dx;
   ball.y += ball.dy;
 
-  // Collisione con i muri superiore e inferiore
-  if (ball.y + ball.radius > canvas.height || ball.y - ball.radius < 0) {
+  if (ball.x + ball.radius > canvas.width || ball.x - ball.radius < 0) {
+    ball.dx *= -1;
+    collisionSound.play();
+  }
+  if (ball.y - ball.radius < 0) {
     ball.dy *= -1;
+    collisionSound.play();
   }
 
-  // Collisione con i paddle
   if (
-    ball.x - ball.radius < playerPaddle.x + playerPaddle.width &&
-    ball.y > playerPaddle.y &&
-    ball.y < playerPaddle.y + playerPaddle.height
+    ball.y + ball.radius > playerPaddle.y &&
+    ball.x > playerPaddle.x &&
+    ball.x < playerPaddle.x + playerPaddle.width
   ) {
-    ball.dx *= -1;
-    ball.dx += speedIncrease * Math.sign(ball.dx);
+    ball.dy *= -1;
     ball.dy += speedIncrease * Math.sign(ball.dy);
-  } else if (ball.x + ball.radius > aiPaddle.x && ball.y > aiPaddle.y && ball.y < aiPaddle.y + aiPaddle.height) {
-    ball.dx *= -1;
     ball.dx += speedIncrease * Math.sign(ball.dx);
-    ball.dy += speedIncrease * Math.sign(ball.dy);
+    collisionSound.play();
   }
 
-  // Collisione con i blocchi
-  for (let block of blocks) {
-    if (block.status === 1) {
-      if (ball.x > block.x && ball.x < block.x + block.width && ball.y > block.y && ball.y < block.y + block.height) {
-        ball.dy *= -1;
-        block.status = 0;
+  for (let c = 0; c < blockColumnCount; c++) {
+    for (let r = 0; r < blockRowCount; r++) {
+      const block = blocks[c][r];
+      if (block.status === 1) {
+        if (ball.x > block.x && ball.x < block.x + block.width && ball.y > block.y && ball.y < block.y + block.height) {
+          ball.dy *= -1;
+          block.status = 0;
+          playerScore++;
+          scoreSound.play();
+
+          if (block.power) {
+            activatePower(block.power);
+          }
+
+          anime({
+            targets: block,
+            width: 0,
+            height: 0,
+            duration: 500,
+            easing: "easeInOutQuad",
+          });
+        }
       }
     }
   }
 
-  // Reset palla se esce dai limiti e aggiornamento punteggio
-  if (ball.x + ball.radius > canvas.width) {
-    playerScore++;
-    resetBall();
-  } else if (ball.x - ball.radius < 0) {
-    aiScore++;
+  if (ball.y + ball.radius > canvas.height) {
     resetBall();
   }
 
-  // Controlla se tutti i blocchi sono stati distrutti
-  if (blocks.every((block) => block.status === 0)) {
+  if (blocks.flat().every((block) => block.status === 0)) {
     nextLevel();
   }
 }
@@ -169,26 +243,28 @@ function resetBall() {
 
 function nextLevel() {
   level++;
-  initialBallSpeed += 1; // Aumenta la velocità della pallina
-  initBlocks(); // Reinizializza i blocchi
-  resetBall(); // Resetta la posizione della pallina
+  initialBallSpeed += 1;
+  initBlocks();
+  resetBall();
 }
 
 function update() {
-  movePaddle(playerPaddle);
-  moveAIPaddle();
-  moveBall();
+  if (!isPaused) {
+    movePaddle();
+    moveBall();
+  }
 }
 
 function draw() {
   context.clearRect(0, 0, canvas.width, canvas.height);
-  drawRect(playerPaddle.x, playerPaddle.y, playerPaddle.width, playerPaddle.height);
-  drawRect(aiPaddle.x, aiPaddle.y, aiPaddle.width, aiPaddle.height);
+  draw3DRect(playerPaddle.x, playerPaddle.y, playerPaddle.width, playerPaddle.height, "#fff");
   drawCircle(ball.x, ball.y, ball.radius);
-  drawText(playerScore, canvas.width / 4, 50);
-  drawText(aiScore, (3 * canvas.width) / 4, 50);
-  drawText(`Level: ${level}`, canvas.width / 2 - 50, 50);
+  drawText(`Score: ${playerScore}`, 10, 20);
+  drawText(`Level: ${level}`, canvas.width - 100, 20);
   drawBlocks();
+  if (isPaused) {
+    drawText("Paused", canvas.width / 2 - 50, canvas.height / 2);
+  }
 }
 
 function gameLoop() {
@@ -198,15 +274,45 @@ function gameLoop() {
 }
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowUp") {
-    playerPaddle.dy = -5;
-  } else if (event.key === "ArrowDown") {
-    playerPaddle.dy = 5;
+  if (event.key === "ArrowLeft") {
+    playerPaddle.dx = -20; // Increased paddle speed
+  } else if (event.key === "ArrowRight") {
+    playerPaddle.dx = 20; // Increased paddle speed
+  } else if (event.key === " ") {
+    isPaused = !isPaused;
   }
 });
 
-document.addEventListener("keyup", () => {
-  playerPaddle.dy = 0;
+document.addEventListener("keyup", (event) => {
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    playerPaddle.dx = 0;
+  }
+});
+
+document.getElementById("saveGame").addEventListener("click", () => {
+  const gameState = {
+    playerScore,
+    level,
+    blocks,
+    playerPaddle,
+    ball,
+  };
+  localStorage.setItem("gameState", JSON.stringify(gameState));
+  alert("Game Saved!");
+});
+
+document.getElementById("loadGame").addEventListener("click", () => {
+  const savedState = JSON.parse(localStorage.getItem("gameState"));
+  if (savedState) {
+    playerScore = savedState.playerScore;
+    level = savedState.level;
+    blocks = savedState.blocks;
+    playerPaddle = savedState.playerPaddle;
+    ball = savedState.ball;
+    alert("Game Loaded!");
+  } else {
+    alert("No saved game found.");
+  }
 });
 
 initBlocks();
